@@ -1,0 +1,11 @@
+# Build output
+.build/
+.swiftpm/
+Slit.app/
+dist/
+
+# macOS
+.DS_Store
+
+# Local working material (backups, probes, previews, old builds)
+revamp/
