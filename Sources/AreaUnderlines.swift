@@ -8,7 +8,7 @@ enum AreaUnderline {
     /// How far the wave rises above and dips below its centre line.
     static let amplitude: CGFloat = 1.25
     /// Length of one full up-and-down of the wave.
-    static let wavelength: CGFloat = 6
+    static let wavelength: CGFloat = 10
 
     /// The band the squiggle is drawn in: as wide as the text, just below it,
     /// and tall enough for the wave plus its stroke.
@@ -57,11 +57,12 @@ struct AreaUnderlines: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private enum Style {
-        // Slit's accent colour reads on both white and dark pages.
+        // Red, like a spelling squiggle; the system red adapts to dark pages.
+        static let color = Color(nsColor: .systemRed)
         static let opacity = 0.9
         static let animation = Animation.easeOut(duration: 0.14)
-        /// Long enough to see the pen move, short enough not to lag the drag.
-        static let draw = Animation.easeOut(duration: 0.32)
+        /// Slow enough to watch the pen move along the line.
+        static let draw = Animation.easeInOut(duration: 0.7)
     }
 
     var body: some View {
@@ -69,7 +70,7 @@ struct AreaUnderlines: View {
             ForEach(lines.map(AreaUnderline.rect(under:)), id: \.key) { band in
                 SquiggleShape()
                     .stroke(
-                        SlitPalette.accent.opacity(Style.opacity),
+                        Style.color.opacity(Style.opacity),
                         style: StrokeStyle(
                             lineWidth: AreaUnderline.thickness,
                             lineCap: .round, lineJoin: .round
