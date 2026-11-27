@@ -235,11 +235,49 @@ struct AreaUnderlineTests {
         let underline = AreaUnderline.rect(under: line)
 
         #expect(underline.minY > line.maxY)
-        #expect(underline.maxY <= line.maxY + 5)
+        #expect(underline.maxY <= line.maxY + 6)
     }
 
-    @Test("It is a thin line")
-    func isThin() {
-        #expect(AreaUnderline.rect(under: line).height <= 2)
+    @Test("It is a low wave, not a tall band")
+    func isLow() {
+        #expect(AreaUnderline.rect(under: line).height <= 5)
+    }
+}
+
+/// The squiggle drawn inside an underline's band.
+struct AreaSquiggleTests {
+    private let band = AreaUnderline.rect(under: CGRect(x: 100, y: 200, width: 380, height: 18))
+
+    @Test("The squiggle starts at the left of the line and ends at the right")
+    func spansTheBand() throws {
+        let path = AreaUnderline.squiggle(in: band)
+        let end = try #require(path.currentPoint)
+
+        #expect(abs(path.boundingRect.minX - band.minX) < 0.01)
+        #expect(abs(end.x - band.maxX) < 0.01)
+    }
+
+    @Test("The stroke stays inside the band")
+    func staysInsideTheBand() {
+        let wave = AreaUnderline.squiggle(in: band).boundingRect
+        let halfStroke = AreaUnderline.thickness / 2
+
+        #expect(wave.minY >= band.minY + halfStroke - 0.01)
+        #expect(wave.maxY <= band.maxY - halfStroke + 0.01)
+    }
+
+    @Test("It actually waves: it rises and falls across the line")
+    func waves() {
+        let wave = AreaUnderline.squiggle(in: band).boundingRect
+
+        #expect(wave.height >= AreaUnderline.amplitude * 1.5)
+    }
+
+    @Test("A very short line still gets a whole wave, ending at its right edge", arguments: [1.0, 3.0, 7.0])
+    func shortLine(width: CGFloat) throws {
+        let short = AreaUnderline.rect(under: CGRect(x: 10, y: 10, width: width, height: 12))
+        let end = try #require(AreaUnderline.squiggle(in: short).currentPoint)
+
+        #expect(abs(end.x - short.maxX) < 0.01)
     }
 }
