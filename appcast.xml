@@ -6,5 +6,15 @@
     <description>Updates for Slit, read by "Check for Updates…" in the app.</description>
     <language>en</language>
     <!-- Releases, newest first. Added by the release workflow. -->
+    <item>
+      <title>Version 1.1</title>
+      <pubDate>Fri, 27 Nov 2026 14:17:56 GMT</pubDate>
+      <sparkle:version>10</sparkle:version>
+      <sparkle:shortVersionString>1.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/Ryukun1/slit/releases/tag/v1.1</sparkle:fullReleaseNotesLink>
+      <description><![CDATA[<p>Slit 1.1. <a href="https://github.com/Ryukun1/slit/releases/tag/v1.1">What's new</a></p>]]></description>
+      <enclosure url="https://github.com/Ryukun1/slit/releases/download/v1.1/slit.dmg" type="application/octet-stream" sparkle:edSignature="IClgmX4j4Zb4ZoqdU+n2Rll4pN4OZ2CNNFsVO46s2P8+mEP5YWsHJmNxyhJ6OtgaX8XA4sVqXwQHCmo/2znnBg==" length="1807335"/>
+    </item>
   </channel>
 </rss>
