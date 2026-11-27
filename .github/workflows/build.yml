@@ -1,0 +1,53 @@
+# Builds Slit on a GitHub-hosted Mac (which has Xcode), runs the tests and
+# packages the DMG. The DMG is attached to each run as a downloadable artifact.
+#
+# The build is ad-hoc signed (no Developer ID), exactly like a local
+# ./build_app.sh --dmg without a certificate.
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcode-select -p
+          xcodebuild -version
+          swift --version
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build app and DMG
+        run: ./build_app.sh --dmg
+
+      - name: Checksum
+        run: shasum -a 256 dist/slit.dmg | tee dist/slit.dmg.sha256
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: slit-dmg-${{ github.sha }}
+          path: |
+            dist/slit.dmg
+            dist/slit.dmg.sha256
+          if-no-files-found: error
+          retention-days: 30
