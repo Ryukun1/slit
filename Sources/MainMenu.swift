@@ -4,10 +4,12 @@ import AppKit
 /// drawn; it exists to give Slit's own windows their standard shortcuts.
 @MainActor
 enum MainMenu {
-    static func make(settingsTarget: AnyObject, settingsAction: Selector) -> NSMenu {
+    static func make(settingsTarget: AnyObject, settingsAction: Selector,
+                     updatesItem: NSMenuItem) -> NSMenu {
         let mainMenu = NSMenu()
         mainMenu.addItem(submenuItem(appMenu(settingsTarget: settingsTarget,
-                                             settingsAction: settingsAction)))
+                                             settingsAction: settingsAction,
+                                             updatesItem: updatesItem)))
         mainMenu.addItem(submenuItem(fileMenu()))
         mainMenu.addItem(submenuItem(editMenu()))
         return mainMenu
@@ -19,11 +21,13 @@ enum MainMenu {
         return item
     }
 
-    private static func appMenu(settingsTarget: AnyObject, settingsAction: Selector) -> NSMenu {
+    private static func appMenu(settingsTarget: AnyObject, settingsAction: Selector,
+                                updatesItem: NSMenuItem) -> NSMenu {
         let menu = NSMenu(title: "Slit")
         let settings = NSMenuItem(title: "Settings…", action: settingsAction, keyEquivalent: ",")
         settings.target = settingsTarget
         menu.addItem(settings)
+        menu.addItem(updatesItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(
             title: "Quit Slit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"

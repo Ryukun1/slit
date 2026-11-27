@@ -5,6 +5,7 @@ import SwiftUI
 /// strip, and grouped sections with segmented toggles + minimal sliders.
 struct SettingsView: View {
     @ObservedObject var settings = AppSettings.shared
+    @ObservedObject private var updater = Updater.shared
 
     // Palette — mirrors the CSS variables on slit.app
     private static let bg = Color(red: 0xE / 255.0, green: 0xE / 255.0, blue: 0x10 / 255.0)
@@ -31,6 +32,7 @@ struct SettingsView: View {
                         selectionSection
                         fontsSection
                         shortcutsSection
+                        updatesSection
                         aboutSection
                     }
                     .padding(.horizontal, 40)
@@ -207,13 +209,34 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var updatesSection: some View {
+        section(title: "Updates") {
+            if updater.isAvailable {
+                toggleRow("Check for updates automatically", binding: $updater.automaticallyChecks)
+                row("Version \(Updater.currentVersion)", trailing: {
+                    Button("Check Now") { updater.checkForUpdates() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Self.ink)
+                        .padding(.horizontal, 12)
+                        .frame(height: 26)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Self.bgSoft))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Self.rule, lineWidth: 1))
+                })
+            } else {
+                unavailableRow("Check for updates", reason: "Only in the packaged app")
+            }
+        }
+    }
+
     private var aboutSection: some View {
         section(title: "About") {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Slit")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(Self.ink)
-                Text("Version 1.0  ·  macOS reading focus tool")
+                Text("Version \(Updater.currentVersion)  ·  macOS reading focus tool")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Self.inkSoft)
             }

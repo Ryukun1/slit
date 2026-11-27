@@ -40,7 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Without a SwiftUI scene there is no default main menu, and with no
         // main menu ⌘W, ⌘Q and ⌘, do nothing in Slit's own windows.
         NSApp.mainMenu = MainMenu.make(
-            settingsTarget: self, settingsAction: #selector(openSettings)
+            settingsTarget: self, settingsAction: #selector(openSettings),
+            updatesItem: Updater.shared.makeMenuItem()
         )
 
         // Set up menu bar
@@ -184,6 +185,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             systemSymbolName: "lock.shield", accessibilityDescription: "Permissions"
         )
         menu.addItem(permissionsItem)
+
+        menu.addItem(Updater.shared.makeMenuItem())
 
         menu.addItem(NSMenuItem.separator())
 

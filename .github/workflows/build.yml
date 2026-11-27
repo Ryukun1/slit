@@ -39,6 +39,22 @@ jobs:
       - name: Build app and DMG
         run: ./build_app.sh --dmg
 
+      - name: Launch smoke test
+        # Catches an app that cannot even start, e.g. Sparkle.framework failing
+        # to load. The app stays running (waiting for permissions) if it's fine.
+        run: |
+          ./Slit.app/Contents/MacOS/TextReaderHelper > launch.log 2>&1 &
+          pid=$!
+          sleep 10
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "Slit is still running after 10 s"
+            kill "$pid"
+          else
+            echo "Slit exited during launch:"
+            cat launch.log
+            exit 1
+          fi
+
       - name: Checksum
         run: shasum -a 256 dist/slit.dmg | tee dist/slit.dmg.sha256
 

@@ -25,6 +25,18 @@ NOTARY_PROFILE="${NOTARY_PROFILE:-slit-notary}"
 
 DIST_DIR="dist"
 
+# Version shown to users, and the build number Sparkle compares to decide
+# whether an update is newer. The release workflow sets both from the tag and
+# the commit count; local builds default to 1.0 (1).
+VERSION="${VERSION:-1.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-1}"
+
+# Updates: the feed Slit reads and the public half of the EdDSA key every
+# update must be signed with (the private half is in the maintainer's keychain
+# and the SPARKLE_ED_PRIVATE_KEY repository secret).
+FEED_URL="https://raw.githubusercontent.com/Ryukun1/slit/main/appcast.xml"
+SPARKLE_PUBLIC_KEY="DOR7SRSzTrCnOF5ksh+5sgSN+8yCxVfhGepO4tmR3r0="
+
 INSTALL=false
 DMG=false
 NOTARIZE=false
@@ -162,6 +174,32 @@ if [ -d "$RESOURCE_BUNDLE" ]; then
     cp -R "$RESOURCE_BUNDLE" "$APP_BUNDLE/Contents/Resources/"
 fi
 
+# --- Sparkle (the updater) ---------------------------------------------------
+# Embedded in Contents/Frameworks (the binary's rpath points there) and signed
+# inside-out with the same identity as the app. Copied and signed again only
+# when SwiftPM's copy is a different version, so an unchanged rebuild keeps
+# the app's signature (and with it the Accessibility grant).
+SPARKLE_SRC="$(swift build -c release --show-bin-path)/Sparkle.framework"
+SPARKLE_DEST="$APP_BUNDLE/Contents/Frameworks/Sparkle.framework"
+FRAMEWORK_CHANGED=false
+if [ ! -d "$SPARKLE_SRC" ]; then
+    echo "❌ Sparkle.framework not found at $SPARKLE_SRC"
+    exit 1
+fi
+sparkle_version() {
+    /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$1/Resources/Info.plist" 2>/dev/null || true
+}
+if [ ! -d "$SPARKLE_DEST" ] \
+   || [ "$(sparkle_version "$SPARKLE_SRC")" != "$(sparkle_version "$SPARKLE_DEST")" ] \
+   || ! codesign --verify --strict "$SPARKLE_DEST" >/dev/null 2>&1; then
+    echo "  embedding Sparkle $(sparkle_version "$SPARKLE_SRC")"
+    mkdir -p "$APP_BUNDLE/Contents/Frameworks"
+    rm -rf "$SPARKLE_DEST"
+    # ditto keeps the framework's symlinks intact; cp -R can flatten them.
+    ditto "$SPARKLE_SRC" "$SPARKLE_DEST"
+    FRAMEWORK_CHANGED=true
+fi
+
 cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -182,9 +220,15 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>$VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$BUILD_NUMBER</string>
+    <key>SUFeedURL</key>
+    <string>$FEED_URL</string>
+    <key>SUPublicEDKey</key>
+    <string>$SPARKLE_PUBLIC_KEY</string>
+    <key>SUEnableAutomaticChecks</key>
+    <false/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key>
@@ -209,19 +253,41 @@ EOF
 #    unchanged binary would needlessly mint a new hash and drop the grant.
 #    Only sign when the binary changed or the bundle isn't validly signed yet.
 NEEDS_SIGN=false
-if [ "$BIN_CHANGED" = true ]; then
+if [ "$BIN_CHANGED" = true ] || [ "$FRAMEWORK_CHANGED" = true ]; then
     NEEDS_SIGN=true
-elif ! codesign --verify --deep "$APP_BUNDLE" >/dev/null 2>&1; then
+elif ! codesign --verify --deep --strict "$APP_BUNDLE" >/dev/null 2>&1; then
     NEEDS_SIGN=true
 fi
 
-if [ "$NEEDS_SIGN" = true ]; then
-    echo "Signing ($SIGN_IDENTITY)..."
-    codesign --force --deep \
+# Signs Sparkle's nested helpers, then the framework, then the app itself.
+# No --deep on the app: it would stamp Slit's bundle id onto Sparkle's parts.
+sign_bundle() {
+    local bundle="$1"
+    local fw="$bundle/Contents/Frameworks/Sparkle.framework"
+    local part
+    for part in \
+        "$fw/Versions/B/XPCServices/Installer.xpc" \
+        "$fw/Versions/B/XPCServices/Downloader.xpc" \
+        "$fw/Versions/B/Autoupdate" \
+        "$fw/Versions/B/Updater.app" \
+        "$fw"
+    do
+        [ -e "$part" ] || continue
+        codesign --force --sign "$SIGN_IDENTITY" --options runtime \
+            --preserve-metadata=entitlements "$part" 2>&1 \
+            | grep -v "replacing existing signature" || true
+    done
+    codesign --force \
         --sign "$SIGN_IDENTITY" \
         --identifier "$BUNDLE_ID" \
         --options runtime \
-        "$APP_BUNDLE" 2>&1 | grep -v "replacing existing signature" || true
+        "$bundle" 2>&1 | grep -v "replacing existing signature" || true
+    codesign --verify --deep --strict "$bundle"
+}
+
+if [ "$NEEDS_SIGN" = true ]; then
+    echo "Signing ($SIGN_IDENTITY)..."
+    sign_bundle "$APP_BUNDLE"
 else
     echo "Signature unchanged — Accessibility/Input Monitoring grant preserved."
 fi
@@ -272,11 +338,7 @@ if [ "$INSTALL" = true ]; then
 
     # Re-sign the installed copy so its designated requirement is the stable
     # certificate-based one (not a stale cdhash from a previous ad-hoc build).
-    codesign --force --deep \
-        --sign "$SIGN_IDENTITY" \
-        --identifier "$BUNDLE_ID" \
-        --options runtime \
-        "$INSTALLED" 2>&1 | grep -v "replacing existing signature" || true
+    sign_bundle "$INSTALLED"
 
     echo "✅ Installed to $INSTALLED"
     if [ "$SIGN_IDENTITY" = "-" ]; then
