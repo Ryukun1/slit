@@ -19,6 +19,7 @@ struct SettingsView: View {
         ZStack(alignment: .top) {
             Self.bg.ignoresSafeArea()
 
+            ScrollViewReader { scroller in
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     header
@@ -33,6 +34,7 @@ struct SettingsView: View {
                         fontsSection
                         shortcutsSection
                         updatesSection
+                            .id(Self.updatesAnchor)
                         aboutSection
                     }
                     .padding(.horizontal, 40)
@@ -40,6 +42,10 @@ struct SettingsView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            // "Check for Updates…" opens Settings here, at the Updates section.
+            .onAppear { scrollToUpdatesIfAsked(scroller) }
+            .onChange(of: updater.focusRequest) { _, _ in scrollToUpdatesIfAsked(scroller) }
+            }
         }
         .frame(width: 640, height: 680)
         .background(Self.bg)
@@ -209,25 +215,107 @@ struct SettingsView: View {
         }
     }
 
+    private static let updatesAnchor = "updates"
+
+    private func scrollToUpdatesIfAsked(_ scroller: ScrollViewProxy) {
+        guard updater.takeFocusRequest() else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            scroller.scrollTo(Self.updatesAnchor, anchor: .top)
+        }
+    }
+
     @ViewBuilder
     private var updatesSection: some View {
         section(title: "Updates") {
             if updater.isAvailable {
+                updateStatusRow
                 toggleRow("Check for updates automatically", binding: $updater.automaticallyChecks)
-                row("Version \(Updater.currentVersion)", trailing: {
-                    Button("Check Now") { updater.checkForUpdates() }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Self.ink)
-                        .padding(.horizontal, 12)
-                        .frame(height: 26)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Self.bgSoft))
-                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Self.rule, lineWidth: 1))
-                })
             } else {
                 unavailableRow("Check for updates", reason: "Only in the packaged app")
             }
         }
+    }
+
+    /// Version, what the updater is doing, and the buttons that apply now.
+    private var updateStatusRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Self.rule.frame(height: 1)
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Version \(Updater.currentVersion)")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Self.ink)
+                    if !updater.status.message.isEmpty {
+                        Text(updater.status.message)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(updateMessageColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .transition(.opacity)
+                    }
+                }
+                Spacer(minLength: 12)
+                updateButtons
+            }
+            .padding(.vertical, 14)
+
+            if let progress = updater.status.progress {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .tint(Self.accent)
+                    .padding(.bottom, 14)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: updater.status)
+    }
+
+    @ViewBuilder
+    private var updateButtons: some View {
+        HStack(spacing: 8) {
+            switch updater.status {
+            case .available, .readyToInstall:
+                if updater.awaitingChoice {
+                    pillButton("Skip This Version", prominent: false) { updater.skipThisVersion() }
+                    pillButton("Later", prominent: false) { updater.later() }
+                    pillButton(installTitle, prominent: true) { updater.install() }
+                } else {
+                    pillButton("Check Now", prominent: false) { updater.checkForUpdates() }
+                }
+            case .checking, .downloading:
+                if updater.canCancel {
+                    pillButton("Cancel", prominent: false) { updater.cancel() }
+                }
+            case .preparing, .installing:
+                ProgressView().controlSize(.small)
+            case .idle, .upToDate, .failed:
+                pillButton("Check Now", prominent: false) { updater.checkForUpdates() }
+            }
+        }
+    }
+
+    private var installTitle: String {
+        if case .readyToInstall = updater.status { return "Restart to Update" }
+        return "Install Update"
+    }
+
+    private var updateMessageColor: Color {
+        switch updater.status {
+        case .failed: return Color(nsColor: .systemRed)
+        case .available, .readyToInstall: return Self.accent
+        default: return Self.inkSoft
+        }
+    }
+
+    private func pillButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(prominent ? Self.bg : Self.ink)
+            .padding(.horizontal, 12)
+            .frame(height: 26)
+            .background(RoundedRectangle(cornerRadius: 6).fill(prominent ? Self.accent : Self.bgSoft))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(prominent ? .clear : Self.rule, lineWidth: 1))
+            .fixedSize()
     }
 
     private var aboutSection: some View {

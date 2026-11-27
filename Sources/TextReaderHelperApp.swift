@@ -37,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppPresence.shared.installAppIcon()
         AppSettings.shared.resolveConflicts()
 
+        // Update checks show their progress in Settings → Updates.
+        Updater.shared.showSettings = { [weak self] in self?.openSettings() }
+
         // Without a SwiftUI scene there is no default main menu, and with no
         // main menu ⌘W, ⌘Q and ⌘, do nothing in Slit's own windows.
         NSApp.mainMenu = MainMenu.make(

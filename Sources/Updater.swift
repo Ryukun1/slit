@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import OSLog
 import Sparkle
 
 /// Where updates come from and how they are verified, as `build_app.sh` writes
@@ -33,52 +34,128 @@ struct UpdateConfiguration: Equatable {
 /// Slit's "Check for Updates…": finds a newer release, downloads it, checks its
 /// signature, replaces the app and relaunches it, using Sparkle.
 ///
-/// Slit only goes online when the user asks, unless they turn on automatic
-/// checks in Settings (off by default).
+/// Everything is shown in Settings → Updates rather than in Sparkle's own
+/// windows (see `UpdateUserDriver`). Slit only goes online when the user asks,
+/// unless they turn on automatic checks in Settings (off by default).
 @MainActor
-final class Updater: ObservableObject {
+final class Updater: NSObject, ObservableObject, NSMenuItemValidation {
     static let shared = Updater()
 
     /// Mirrors Sparkle's own setting so Settings redraws when it changes.
     @Published var automaticallyChecks: Bool {
-        didSet { controller?.updater.automaticallyChecksForUpdates = automaticallyChecks }
+        didSet { updater?.automaticallyChecksForUpdates = automaticallyChecks }
     }
 
-    private let controller: SPUStandardUpdaterController?
+    @Published private(set) var status: UpdateStatus = .idle
+    /// Whether Install / Skip / Later can be answered right now.
+    @Published private(set) var awaitingChoice = false
+    /// Whether the current check or download can be cancelled.
+    @Published private(set) var canCancel = false
+    /// Bumped to ask Settings to scroll to the Updates section.
+    @Published private(set) var focusRequest = 0
+
+    /// Opens Settings; set by the app delegate.
+    var showSettings: () -> Void = {}
+
+    private let driver: UpdateUserDriver
+    private let updater: SPUUpdater?
 
     /// False in builds that were not packaged for release.
-    var isAvailable: Bool { controller != nil }
+    var isAvailable: Bool { updater != nil }
 
     private init(bundle: Bundle = .main) {
+        let driver = UpdateUserDriver()
+        self.driver = driver
         guard UpdateConfiguration(info: bundle.infoDictionary) != nil else {
-            controller = nil
+            updater = nil
             automaticallyChecks = false
+            super.init()
             return
         }
-        let controller = SPUStandardUpdaterController(
-            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil
+        let updater = SPUUpdater(
+            hostBundle: bundle, applicationBundle: bundle, userDriver: driver, delegate: nil
         )
-        self.controller = controller
-        automaticallyChecks = controller.updater.automaticallyChecksForUpdates
+        self.updater = updater
+        automaticallyChecks = updater.automaticallyChecksForUpdates
+        super.init()
+
+        driver.onChange = { [weak self] flow in self?.refresh(from: flow) }
+        driver.onNeedsAttention = { [weak self] in self?.bringForward() }
+        do {
+            try updater.start()
+        } catch {
+            status = .failed(message: error.localizedDescription)
+            Self.log.error("Updater failed to start: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
+    // MARK: - Actions
+
+    /// Opens Settings at the Updates section and checks there.
     func checkForUpdates() {
-        controller?.checkForUpdates(nil)
+        bringForward()
+        guard let updater, !status.isWorking else { return }
+        updater.checkForUpdates()
     }
 
-    /// A menu item wired straight to Sparkle, which also greys it out while a
-    /// check is already running.
-    func makeMenuItem(title: String = "Check for Updates…") -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+    func install() { driver.install() }
+    func skipThisVersion() { driver.skipThisVersion() }
+    func later() { driver.later() }
+    func cancel() { driver.cancel() }
+
+    // MARK: - Menu
+
+    /// "Check for Updates…", or "Update to Slit 1.2…" once one is waiting.
+    func makeMenuItem() -> NSMenuItem {
+        let item = NSMenuItem(
+            title: status.menuTitle, action: #selector(menuItemChosen(_:)), keyEquivalent: ""
+        )
+        item.target = self
         item.image = NSImage(
             systemSymbolName: "arrow.triangle.2.circlepath",
             accessibilityDescription: "Check for Updates"
         )
-        if let controller {
-            item.target = controller
-            item.action = #selector(SPUStandardUpdaterController.checkForUpdates(_:))
-        }
         return item
+    }
+
+    @objc private func menuItemChosen(_ sender: Any?) {
+        switch status {
+        case .available, .readyToInstall: bringForward()
+        default: checkForUpdates()
+        }
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(menuItemChosen(_:)) else { return true }
+        menuItem.title = status.menuTitle
+        return isAvailable
+    }
+
+    // MARK: - Helpers
+
+    private static let log = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.alfonsomulet.slit", category: "updates"
+    )
+
+    private func refresh(from flow: UpdateFlow) {
+        status = flow.status
+        awaitingChoice = driver.canAnswer
+        canCancel = driver.canCancel
+    }
+
+    private var pendingFocus = false
+
+    /// True once after something asked for the Updates section; Settings
+    /// calls this when it appears or when `focusRequest` changes.
+    func takeFocusRequest() -> Bool {
+        defer { pendingFocus = false }
+        return pendingFocus
+    }
+
+    private func bringForward() {
+        pendingFocus = true
+        showSettings()
+        focusRequest += 1
     }
 
     /// The version shown to the user, e.g. "1.1".
