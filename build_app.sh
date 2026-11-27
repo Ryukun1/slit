@@ -259,6 +259,18 @@ elif ! codesign --verify --deep --strict "$APP_BUNDLE" >/dev/null 2>&1; then
     NEEDS_SIGN=true
 fi
 
+# Hardened runtime only with a real certificate. Under the hardened runtime
+# macOS loads a framework only if it is signed by the app's own team, and an
+# ad-hoc signature has no team, so an ad-hoc Slit with the runtime on crashes
+# at launch ("Library not loaded: …Sparkle … different Team IDs"). That broke
+# v1.1. The runtime is only required for notarization, which ad-hoc builds
+# can't get anyway.
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    RUNTIME_OPTIONS=()
+else
+    RUNTIME_OPTIONS=(--options runtime)
+fi
+
 # Signs Sparkle's nested helpers, then the framework, then the app itself.
 # No --deep on the app: it would stamp Slit's bundle id onto Sparkle's parts.
 sign_bundle() {
@@ -273,14 +285,14 @@ sign_bundle() {
         "$fw"
     do
         [ -e "$part" ] || continue
-        codesign --force --sign "$SIGN_IDENTITY" --options runtime \
+        codesign --force --sign "$SIGN_IDENTITY" ${RUNTIME_OPTIONS[@]+"${RUNTIME_OPTIONS[@]}"} \
             --preserve-metadata=entitlements "$part" 2>&1 \
             | grep -v "replacing existing signature" || true
     done
     codesign --force \
         --sign "$SIGN_IDENTITY" \
         --identifier "$BUNDLE_ID" \
-        --options runtime \
+        ${RUNTIME_OPTIONS[@]+"${RUNTIME_OPTIONS[@]}"} \
         "$bundle" 2>&1 | grep -v "replacing existing signature" || true
     codesign --verify --deep --strict "$bundle"
 }

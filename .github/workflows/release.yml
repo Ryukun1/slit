@@ -50,6 +50,18 @@ jobs:
           BUILD_NUMBER: ${{ steps.version.outputs.build }}
         run: ./build_app.sh --dmg
 
+      - name: Check the signature can load Sparkle
+        # An ad-hoc build with the hardened runtime crashes at launch on users'
+        # Macs (it broke v1.1) while still launching on GitHub's, so check it.
+        run: |
+          for code in Slit.app Slit.app/Contents/Frameworks/Sparkle.framework; do
+            info=$(codesign -dv "$code" 2>&1)
+            if echo "$info" | grep -q 'Signature=adhoc' && echo "$info" | grep -q 'flags=.*runtime'; then
+              echo "::error::$code is ad-hoc signed with the hardened runtime; it will crash at launch"
+              exit 1
+            fi
+          done
+
       - name: Sign the DMG for Sparkle
         id: sign
         env:

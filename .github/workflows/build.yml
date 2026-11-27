@@ -39,6 +39,20 @@ jobs:
       - name: Build app and DMG
         run: ./build_app.sh --dmg
 
+      - name: Check the signature can load Sparkle
+        # GitHub's Macs load the framework even when a user's Mac refuses to,
+        # so check the cause directly: an ad-hoc build must not use the
+        # hardened runtime (see build_app.sh). This is what broke v1.1.
+        run: |
+          for code in Slit.app Slit.app/Contents/Frameworks/Sparkle.framework; do
+            info=$(codesign -dv "$code" 2>&1)
+            echo "$code: $(echo "$info" | grep -E '^CodeDirectory')"
+            if echo "$info" | grep -q 'Signature=adhoc' && echo "$info" | grep -q 'flags=.*runtime'; then
+              echo "::error::$code is ad-hoc signed with the hardened runtime; it will crash at launch"
+              exit 1
+            fi
+          done
+
       - name: Launch smoke test
         # Catches an app that cannot even start, e.g. Sparkle.framework failing
         # to load. The app stays running (waiting for permissions) if it's fine.
