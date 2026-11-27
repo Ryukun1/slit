@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Slit</title>
+    <link>https://github.com/Ryukun1/slit</link>
+    <description>Updates for Slit, read by "Check for Updates…" in the app.</description>
+    <language>en</language>
+    <!-- Releases, newest first. Added by the release workflow. -->
+  </channel>
+</rss>

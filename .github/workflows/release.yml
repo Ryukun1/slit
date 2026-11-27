@@ -1,0 +1,126 @@
+# Publishes a release when a version tag is pushed:
+#
+#   git tag v1.1 && git push origin v1.1
+#
+# Builds and tests Slit, signs the DMG with the Sparkle update key, checks that
+# signature against the public key built into the app, publishes the GitHub
+# Release, then adds the version to appcast.xml on main so "Check for
+# Updates…" finds it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Work out the version
+        id: version
+        run: |
+          tag="$GITHUB_REF_NAME"
+          if ! [[ "$tag" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]]; then
+            echo "::error::Tag must look like v1.2 or v1.2.3 (got $tag)"
+            exit 1
+          fi
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          # Always grows along main, so Sparkle sees every release as newer.
+          echo "build=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build app and DMG
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build }}
+        run: ./build_app.sh --dmg
+
+      - name: Sign the DMG for Sparkle
+        id: sign
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            echo "::error::The SPARKLE_ED_PRIVATE_KEY secret is missing"
+            exit 1
+          fi
+          sign_update=$(find .build/artifacts -name sign_update -type f -perm -u+x | head -1)
+          key_file="$RUNNER_TEMP/sparkle_key"
+          (umask 077; printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$key_file")
+          attrs=$("$sign_update" --ed-key-file "$key_file" dist/slit.dmg)
+          rm -f "$key_file"
+          signature=$(echo "$attrs" | sed -E 's/.*sparkle:edSignature="([^"]+)".*/\1/')
+          length=$(echo "$attrs" | sed -E 's/.*length="([0-9]+)".*/\1/')
+          echo "signature=$signature" >> "$GITHUB_OUTPUT"
+          echo "length=$length" >> "$GITHUB_OUTPUT"
+
+      - name: Check the signature against the app's public key
+        env:
+          SIGNATURE: ${{ steps.sign.outputs.signature }}
+        run: |
+          public_key=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" Slit.app/Contents/Info.plist)
+          work="$RUNNER_TEMP/verify"; mkdir -p "$work"
+          # Ed25519 SubjectPublicKeyInfo header followed by the raw 32-byte key.
+          { printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; echo "$public_key" | base64 -D; } > "$work/pub.der"
+          echo "$SIGNATURE" | base64 -D > "$work/sig.bin"
+          openssl=$(brew --prefix openssl@3)/bin/openssl
+          "$openssl" pkeyutl -verify -pubin -keyform DER -inkey "$work/pub.der" \
+            -rawin -in dist/slit.dmg -sigfile "$work/sig.bin"
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sha=$(shasum -a 256 dist/slit.dmg | cut -d' ' -f1)
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          ## Updating
+          Already have Slit 1.1 or later? Choose **Check for Updates…** in Slit's menu-bar menu.
+          After updating, turn **Screen Recording** and **Accessibility** off and on again for Slit
+          in System Settings → Privacy & Security (Slit isn't signed by Apple yet, so macOS sees each
+          version as a new app).
+
+          ## First install
+          Download \`slit.dmg\`, open it and drag **Slit** to **Applications**. Slit isn't notarized,
+          so the first time you open it go to **System Settings → Privacy & Security** and click
+          **Open Anyway**, or run \`xattr -dr com.apple.quarantine /Applications/Slit.app\`.
+
+          **SHA-256** of \`slit.dmg\`: \`$sha\`
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/slit.dmg \
+            --title "Slit $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+
+      - name: Add the release to the update feed
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build }}
+          SIGNATURE: ${{ steps.sign.outputs.signature }}
+          LENGTH: ${{ steps.sign.outputs.length }}
+        run: |
+          git fetch origin main
+          git switch --detach origin/main
+          python3 .github/scripts/add_appcast_item.py appcast.xml \
+            --version "$VERSION" --build "$BUILD_NUMBER" \
+            --url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/slit.dmg" \
+            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" \
+            --signature "$SIGNATURE" --length "$LENGTH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "chore: add Slit $VERSION to the update feed"
+          git push origin HEAD:main
