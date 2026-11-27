@@ -291,7 +291,11 @@ struct DimOverlayView: View {
                 let fitScale = dyslexicFitScale(for: idx, fontSize: fontSize, indent: indent, baseLeftEdge: baseLeftEdge)
 
                 if line.isReliableText {
-                    let lineBg = idx < cachedLineBgColors.count ? Color(nsColor: cachedLineBgColors[idx]) : bgColor
+                    let lineNSBg = idx < cachedLineBgColors.count ? cachedLineBgColors[idx] : cachedBgColor
+                    let lineBg = idx < cachedLineBgColors.count ? Color(nsColor: lineNSBg) : bgColor
+                    // Per line: a dark code line on a light page needs light text.
+                    let lineText = idx < cachedLineBgColors.count
+                        ? (lineNSBg.isLight ? Color.black : Color.white) : textColor
                     let nsFont = NSFont(name: "OpenDyslexic-Regular", size: fontSize)
                         ?? NSFont.systemFont(ofSize: fontSize)
                     let dyslexicTextWidth = measureTextWidth(line.text, font: nsFont) * fitScale
@@ -307,7 +311,7 @@ struct DimOverlayView: View {
                     HStack {
                         Text(line.text)
                             .font(lineFont)
-                            .foregroundColor(textColor)
+                            .foregroundColor(lineText)
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                             .scaleEffect(x: fitScale, y: 1.0, anchor: .leading)
@@ -406,11 +410,15 @@ struct DimOverlayView: View {
     private func cacheDyslexicColors(for lines: [TextLine]) async {
         guard let first = lines.first else { return }
 
-        let union = lines.dropFirst().reduce(Self.sampleRect(around: first.rect)) {
+        let wanted = lines.dropFirst().reduce(Self.sampleRect(around: first.rect)) {
             $0.union(Self.sampleRect(around: $1.rect))
         }
+        // Clip to the display ourselves: the capture is clipped to it anyway,
+        // and if that happened silently the image would start lower or further
+        // right than `union`, so every line would be sampled in the wrong place.
+        let union = Self.displayBounds(containing: wanted).map { wanted.intersection($0) } ?? wanted
 
-        guard let cgImage = await captureScreenRegion(union, 1) else {
+        guard !union.isNull, let cgImage = await captureScreenRegion(union, 1) else {
             // Capture failed — fall back to a readable light default rather
             // than leaving the overlay unstyled.
             cachedBgColor = .white
@@ -426,22 +434,12 @@ struct DimOverlayView: View {
         // the image regardless of the display's backing scale.
         let pxPerPoint = CGFloat(cgImage.width) / union.width
 
+        // The colour behind each line's own letters (a highlight, a code
+        // block), falling back to the page around it; see BackgroundSampler.
         let perLine: [NSColor] = lines.map { line in
-            let rect = Self.sampleRect(around: line.rect)
-            let cropped = CGRect(
-                x: (rect.minX - union.minX) * pxPerPoint,
-                y: (rect.minY - union.minY) * pxPerPoint,
-                width: rect.width * pxPerPoint,
-                height: rect.height * pxPerPoint
-            ).integral.intersection(
-                CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height)
-            )
-
-            guard !cropped.isNull, cropped.width > 10, cropped.height > 10,
-                  let slice = cgImage.cropping(to: cropped) else {
-                return .white
-            }
-            return Self.dominantColor(in: NSBitmapImageRep(cgImage: slice))
+            BackgroundSampler.background(
+                of: line.rect, in: cgImage, origin: union.origin, pixelsPerPoint: pxPerPoint
+            ) ?? .white
         }
 
         cachedBgColor = perLine.first ?? .white
@@ -452,23 +450,10 @@ struct DimOverlayView: View {
         }
     }
 
-    /// Sample the background color around a text line.
-    /// Samples from left, right, above, and below the line, then picks
-    /// the most common color (the actual page background).
-    private func sampleBackgroundColor(at screenRect: CGRect) async -> NSColor {
-        let sampleRect = Self.sampleRect(around: screenRect)
-        // Color sampling reads flat background pixels, so 1x is plenty and
-        // keeps the capture cheap.
-        guard let cgImage = await ScreenCapture.region(sampleRect, scale: 1) else {
-            return .white
-        }
-        return Self.dominantColor(in: NSBitmapImageRep(cgImage: cgImage))
-    }
-
     /// The region sampled around a line — a margin on every side so the edges
     /// land on background rather than glyphs.
     private static func sampleRect(around screenRect: CGRect) -> CGRect {
-        let margin: CGFloat = 20
+        let margin = BackgroundSampler.ringMargin
         return CGRect(
             x: screenRect.minX - margin,
             y: screenRect.minY - margin,
@@ -477,72 +462,16 @@ struct DimOverlayView: View {
         )
     }
 
-    /// Most common color around the edges of a bitmap — pure, no capture.
-    private static func dominantColor(in bitmap: NSBitmapImageRep) -> NSColor {
-        let w = bitmap.pixelsWide
-        let h = bitmap.pixelsHigh
-        guard w > 10, h > 10 else { return .white }
-
-        // Sample from edges (where there's no text — just background)
-        var colors: [(r: CGFloat, g: CGFloat, b: CGFloat)] = []
-
-        // Left edge
-        for y in stride(from: 3, to: h - 3, by: max(1, h / 6)) {
-            if let c = bitmap.colorAt(x: 2, y: y)?.usingColorSpace(.sRGB) {
-                colors.append((c.redComponent, c.greenComponent, c.blueComponent))
-            }
+    /// The display under the middle of `rect`, in global points (origin
+    /// top-left), as the screen capture chooses it.
+    private static func displayBounds(containing rect: CGRect) -> CGRect? {
+        var display = CGDirectDisplayID()
+        var count: UInt32 = 0
+        let middle = CGPoint(x: rect.midX, y: rect.midY)
+        guard CGGetDisplaysWithPoint(middle, 1, &display, &count) == .success, count > 0 else {
+            return nil
         }
-        // Right edge
-        for y in stride(from: 3, to: h - 3, by: max(1, h / 6)) {
-            if let c = bitmap.colorAt(x: w - 3, y: y)?.usingColorSpace(.sRGB) {
-                colors.append((c.redComponent, c.greenComponent, c.blueComponent))
-            }
-        }
-        // Top edge
-        for x in stride(from: 3, to: w - 3, by: max(1, w / 8)) {
-            if let c = bitmap.colorAt(x: x, y: 2)?.usingColorSpace(.sRGB) {
-                colors.append((c.redComponent, c.greenComponent, c.blueComponent))
-            }
-        }
-        // Bottom edge
-        for x in stride(from: 3, to: w - 3, by: max(1, w / 8)) {
-            if let c = bitmap.colorAt(x: x, y: h - 3)?.usingColorSpace(.sRGB) {
-                colors.append((c.redComponent, c.greenComponent, c.blueComponent))
-            }
-        }
-
-        guard !colors.isEmpty else { return .white }
-
-        // Find the most common color — group similar colors and pick the biggest group
-        // Quantize to reduce noise (round to nearest 0.05)
-        let quantized = colors.map { (
-            r: (($0.r * 20).rounded() / 20),
-            g: (($0.g * 20).rounded() / 20),
-            b: (($0.b * 20).rounded() / 20)
-        )}
-
-        // Count occurrences of each quantized color
-        var counts: [String: (count: Int, r: CGFloat, g: CGFloat, b: CGFloat)] = [:]
-        for c in quantized {
-            let key = "\(c.r),\(c.g),\(c.b)"
-            if let existing = counts[key] {
-                counts[key] = (existing.count + 1, c.r, c.g, c.b)
-            } else {
-                counts[key] = (1, c.r, c.g, c.b)
-            }
-        }
-
-        // Pick the most frequent color
-        let best = counts.values.max { $0.count < $1.count }!
-        // Now get the actual (non-quantized) average of pixels in this group
-        let matching = colors.filter {
-            abs($0.r - best.r) < 0.05 && abs($0.g - best.g) < 0.05 && abs($0.b - best.b) < 0.05
-        }
-        let r = matching.map(\.r).reduce(0, +) / CGFloat(matching.count)
-        let g = matching.map(\.g).reduce(0, +) / CGFloat(matching.count)
-        let b = matching.map(\.b).reduce(0, +) / CGFloat(matching.count)
-
-        return NSColor(red: r, green: g, blue: b, alpha: 1.0)
+        return CGDisplayBounds(display)
     }
 
     /// Register the bundled OpenDyslexic font once.
